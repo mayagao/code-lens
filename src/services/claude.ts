@@ -16,16 +16,25 @@ export const claude = new Anthropic({
 
 // Create a messages function that matches the API endpoint structure
 export async function createCompletion(prompt: string) {
+  console.log("Sending prompt to Claude (length):", prompt.length);
+
   const response = await claude.messages.create({
     model: "claude-3-opus-20240229",
-    max_tokens: 4000,
+    max_tokens: 2000, // Ensure we get at least 1k tokens in response
     temperature: 0.7,
     messages: [
       {
         role: "user",
-        content: prompt,
+        content: prompt.slice(0, 4000), // Limit prompt to 2k characters
       },
     ],
+  });
+
+  // Log detailed response information
+  console.log("Claude Response Details:", {
+    inputTokens: response.usage?.input_tokens,
+    outputTokens: response.usage?.output_tokens,
+    contentLength: response.content[0].text?.length,
   });
 
   return response;
