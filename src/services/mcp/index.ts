@@ -83,7 +83,7 @@ server.tool(
   "Analyzes a GitHub repository and generates architecture diagrams",
   async (extra: RequestHandlerExtra) => {
     try {
-      const token = process.env.GITHUB_TOKEN;
+      const token = process.env.NEXT_PUBLIC_GITHUB_TOKEN;
       const owner = extra.args?.owner as string;
       const repo = extra.args?.repo as string;
       const branch = (extra.args?.branch as string) || "main";
@@ -225,7 +225,7 @@ server.tool(
   },
   async ({ owner, repo, commit_sha }) => {
     try {
-      const token = process.env.GITHUB_TOKEN;
+      const token = process.env.NEXT_PUBLIC_GITHUB_TOKEN;
 
       // Get commit info
       const commit = await fetchFromGitHub(
@@ -306,7 +306,7 @@ server.tool(
   },
   async ({ owner, repo, base, head }) => {
     try {
-      const token = process.env.GITHUB_TOKEN;
+      const token = process.env.NEXT_PUBLIC_GITHUB_TOKEN;
 
       // Get commits between base and head
       const comparison = await fetchFromGitHub(
@@ -373,7 +373,7 @@ server.tool(
   },
   async ({ owner, repo }) => {
     try {
-      const token = process.env.GITHUB_TOKEN;
+      const token = process.env.NEXT_PUBLIC_GITHUB_TOKEN;
 
       // Get languages used
       const languages = await fetchFromGitHub(

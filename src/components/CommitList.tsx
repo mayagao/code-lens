@@ -3,6 +3,8 @@
 import { useState } from "react";
 import type { Commit } from "@/services/github";
 import { formatDistanceToNow } from "date-fns";
+import Link from "next/link";
+import { useParams } from "next/navigation";
 
 interface CommitListProps {
   commits: Commit[];
@@ -11,6 +13,8 @@ interface CommitListProps {
 
 export function CommitList({ commits, isLoading = false }: CommitListProps) {
   const [expandedCommit, setExpandedCommit] = useState<string | null>(null);
+  const params = useParams();
+  const { owner, repo } = params;
 
   if (isLoading) {
     return (
@@ -34,14 +38,7 @@ export function CommitList({ commits, isLoading = false }: CommitListProps) {
           key={commit.sha}
           className="border rounded-lg hover:border-blue-200 transition-colors"
         >
-          <div
-            className="p-4 cursor-pointer"
-            onClick={() =>
-              setExpandedCommit(
-                expandedCommit === commit.sha ? null : commit.sha
-              )
-            }
-          >
+          <div className="p-4">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 {commit.author.avatarUrl && (
@@ -63,15 +60,23 @@ export function CommitList({ commits, isLoading = false }: CommitListProps) {
                   </p>
                 </div>
               </div>
-              <a
-                href={commit.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm text-gray-500 hover:text-blue-600 font-mono"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {commit.sha.substring(0, 7)}
-              </a>
+              <div className="flex items-center gap-4">
+                <Link
+                  href={`/${owner}/${repo}/commits/${commit.sha}`}
+                  className="px-3 py-1 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-full transition-colors"
+                >
+                  View Analysis
+                </Link>
+                <a
+                  href={commit.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-gray-500 hover:text-blue-600 font-mono"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {commit.sha.substring(0, 7)}
+                </a>
+              </div>
             </div>
 
             {expandedCommit === commit.sha && commit.stats && (

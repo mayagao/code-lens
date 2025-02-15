@@ -6,20 +6,12 @@ import { GitHubService } from "@/services/github";
 import { AnalysisService } from "@/services/analysis";
 import { useAppStore } from "@/store";
 import type { Commit } from "@/services/github";
-import { MermaidDiagram } from "@/components/MermaidDiagram";
 import { CommitList } from "@/components/CommitList";
 
 interface RepoPageParams {
   owner: string;
   repo: string;
   [key: string]: string | string[];
-}
-
-interface Concept {
-  name: string;
-  description: string;
-  category: string;
-  confidence: number;
 }
 
 export default function RepositoryPage() {
@@ -101,13 +93,19 @@ export default function RepositoryPage() {
         {/* Main Content */}
         <div className="space-y-8">
           {/* Analysis Section - Temporarily Disabled */}
-          <div className="border rounded-lg p-6 bg-gray-50">
+          <section className="border rounded-lg p-6">
             <h2 className="text-xl font-semibold mb-4">Repository Analysis</h2>
-            <p className="text-gray-600">
-              Repository analysis is temporarily disabled. Check back later for
-              insights about the codebase structure and concepts.
-            </p>
-          </div>
+            <div className="text-gray-600">
+              <p>
+                Repository analysis is temporarily disabled while we improve the
+                feature.
+              </p>
+              <p className="mt-2 text-sm text-gray-500">
+                Check back soon for detailed repository insights and
+                architecture diagrams.
+              </p>
+            </div>
+          </section>
 
           {/* Commits Section */}
           <section className="border rounded-lg p-6">

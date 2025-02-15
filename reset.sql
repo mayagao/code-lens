@@ -30,6 +30,7 @@ CREATE TABLE "RepositoryAnalysis" (
     "id" TEXT NOT NULL,
     "repositoryId" TEXT NOT NULL,
     "mermaidDiagram" TEXT NOT NULL,
+    "overview" TEXT NOT NULL,
     "lastAnalyzedCommit" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -51,6 +52,20 @@ CREATE TABLE "Concept" (
     CONSTRAINT "Concept_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "CommitAnalysis" (
+    "id" TEXT NOT NULL,
+    "repositoryId" TEXT NOT NULL,
+    "commitSha" TEXT NOT NULL,
+    "codeChanges" JSONB NOT NULL,
+    "architectureDiagram" JSONB NOT NULL,
+    "reactConcept" JSONB NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "CommitAnalysis_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_githubId_key" ON "User"("githubId");
 
@@ -66,6 +81,9 @@ CREATE UNIQUE INDEX "RepositoryAnalysis_repositoryId_key" ON "RepositoryAnalysis
 -- CreateIndex
 CREATE UNIQUE INDEX "Concept_name_analysisId_key" ON "Concept"("name", "analysisId");
 
+-- CreateIndex
+CREATE UNIQUE INDEX "CommitAnalysis_repositoryId_commitSha_key" ON "CommitAnalysis"("repositoryId", "commitSha");
+
 -- AddForeignKey
 ALTER TABLE "Repository" ADD CONSTRAINT "Repository_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
@@ -74,3 +92,7 @@ ALTER TABLE "RepositoryAnalysis" ADD CONSTRAINT "RepositoryAnalysis_repositoryId
 
 -- AddForeignKey
 ALTER TABLE "Concept" ADD CONSTRAINT "Concept_analysisId_fkey" FOREIGN KEY ("analysisId") REFERENCES "RepositoryAnalysis"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CommitAnalysis" ADD CONSTRAINT "CommitAnalysis_repositoryId_fkey" FOREIGN KEY ("repositoryId") REFERENCES "Repository"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+

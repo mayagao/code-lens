@@ -1,5 +1,21 @@
 import { Octokit } from "@octokit/rest";
 import { Repository } from "@/types";
+import { minimatch } from "minimatch";
+
+// Constants for optimization
+const MAX_FILE_SIZE = 100 * 1024; // 100KB
+const MAX_DEPTH = 3;
+const CORE_PATTERNS = [
+  "package.json",
+  "tsconfig.json",
+  "src/**/index.ts",
+  "src/**/types.ts",
+  "src/app/**/page.tsx",
+  "src/app/**/layout.tsx",
+  "prisma/schema.prisma",
+  "src/services/**/*.ts",
+  "src/lib/**/*.ts",
+];
 
 export interface Commit {
   sha: string;
@@ -149,18 +165,84 @@ export class GitHubService {
     return detailedCommits;
   }
 
+  private isImportantFile(path: string): boolean {
+    return CORE_PATTERNS.some((pattern) => minimatch(path, pattern));
+  }
+
   async getRepositoryContents(
     owner: string,
     repo: string,
-    path: string = ""
-  ): Promise<any> {
+    path: string = "",
+    depth: number = MAX_DEPTH
+  ): Promise<Array<{ path: string; content: string }>> {
+    if (depth <= 0) return [];
+
     const { data } = await this.octokit.repos.getContent({
       owner,
       repo,
       path,
     });
 
-    return data;
+    if (!Array.isArray(data)) {
+      // Single file
+      if ("content" in data && typeof data.content === "string") {
+        if (data.size > MAX_FILE_SIZE) {
+          console.log(`Skipping large file: ${data.path} (${data.size} bytes)`);
+          return [];
+        }
+        const content = Buffer.from(data.content, "base64").toString();
+        return [{ path: data.path, content }];
+      }
+      return [];
+    }
+
+    // Directory - recursively fetch contents of important files
+    const files: Array<{ path: string; content: string }> = [];
+    const promises: Promise<Array<{ path: string; content: string }>>[] = [];
+
+    for (const item of data) {
+      if (item.type === "file" && this.isImportantFile(item.path)) {
+        promises.push(
+          this.octokit.repos
+            .getContent({
+              owner,
+              repo,
+              path: item.path,
+            })
+            .then(({ data: fileData }) => {
+              if (
+                !Array.isArray(fileData) &&
+                "content" in fileData &&
+                typeof fileData.content === "string"
+              ) {
+                if (fileData.size > MAX_FILE_SIZE) {
+                  console.log(
+                    `Skipping large file: ${fileData.path} (${fileData.size} bytes)`
+                  );
+                  return [];
+                }
+                const content = Buffer.from(
+                  fileData.content,
+                  "base64"
+                ).toString();
+                return [{ path: fileData.path, content }];
+              }
+              return [];
+            })
+            .catch((error) => {
+              console.error(`Error fetching file ${item.path}:`, error);
+              return [];
+            })
+        );
+      } else if (item.type === "dir") {
+        promises.push(
+          this.getRepositoryContents(owner, repo, item.path, depth - 1)
+        );
+      }
+    }
+
+    const results = await Promise.all(promises);
+    return files.concat(...results);
   }
 
   async getRepositoryLanguages(
@@ -173,5 +255,39 @@ export class GitHubService {
     });
 
     return data;
+  }
+
+  async getCommit(owner: string, repo: string, sha: string): Promise<Commit> {
+    const { data } = await this.octokit.repos.getCommit({
+      owner,
+      repo,
+      ref: sha,
+    });
+
+    return {
+      sha: data.sha,
+      message: data.commit.message,
+      author: {
+        name: data.commit.author?.name || "Unknown",
+        email: data.commit.author?.email || "",
+        date: data.commit.author?.date || new Date().toISOString(),
+        avatarUrl: data.author?.avatar_url,
+      },
+      url: data.html_url,
+      stats: data.stats
+        ? {
+            additions: data.stats.additions || 0,
+            deletions: data.stats.deletions || 0,
+            total: data.stats.total || 0,
+          }
+        : undefined,
+      files: data.files?.map((file) => ({
+        filename: file.filename,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        changes: file.changes,
+      })),
+    };
   }
 }
