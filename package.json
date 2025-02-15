@@ -9,19 +9,30 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@mermaid-js/mermaid-cli": "^11.4.2",
+    "@modelcontextprotocol/sdk": "^1.5.0",
+    "@octokit/rest": "^21.1.1",
+    "@prisma/client": "^6.3.1",
+    "@radix-ui/react-icons": "^1.3.2",
+    "date-fns": "^4.1.0",
+    "mermaid": "^11.4.1",
+    "next": "15.1.7",
+    "next-auth": "^4.24.11",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "next": "15.1.7"
+    "shadcn-ui": "^0.9.4",
+    "zod": "^3.24.2",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "typescript": "^5",
-    "@types/node": "^20",
+    "@eslint/eslintrc": "^3",
+    "@types/node": "^20.17.19",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "postcss": "^8",
-    "tailwindcss": "^3.4.1",
     "eslint": "^9",
     "eslint-config-next": "15.1.7",
-    "@eslint/eslintrc": "^3"
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.7.3"
   }
 }

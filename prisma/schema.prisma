@@ -1,0 +1,59 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String       @id @default(cuid())
+  githubId     String       @unique
+  name         String
+  email        String?
+  avatarUrl    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  repositories Repository[]
+}
+
+model Repository {
+  id          String              @id @default(cuid())
+  name        String
+  owner       String
+  description String?
+  githubId    String              @unique
+  userId      String
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  user        User                @relation(fields: [userId], references: [id])
+  analysis    RepositoryAnalysis?
+
+  @@unique([owner, name])
+}
+
+model RepositoryAnalysis {
+  id                 String     @id @default(cuid())
+  repositoryId       String     @unique
+  mermaidDiagram     String
+  lastAnalyzedCommit String
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  concepts           Concept[]
+  repository         Repository @relation(fields: [repositoryId], references: [id])
+}
+
+model Concept {
+  id          String             @id @default(cuid())
+  name        String
+  description String
+  category    String
+  confidence  Float
+  analysisId  String
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  analysis    RepositoryAnalysis @relation(fields: [analysisId], references: [id])
+
+  @@unique([name, analysisId])
+}
