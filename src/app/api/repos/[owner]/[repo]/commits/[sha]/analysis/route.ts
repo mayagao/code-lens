@@ -4,10 +4,27 @@ import prisma from "@/lib/prisma";
 import { createCompletion } from "@/services/claude";
 import { GitHubService } from "@/services/github";
 import { z } from "zod";
+import crypto from "crypto";
+import chalk from "chalk";
 import {
   PrismaClientKnownRequestError,
   PrismaClientInitializationError,
 } from "@prisma/client/runtime/library";
+
+// Add logging utilities
+const log = {
+  info: (msg: string) => console.log(chalk.blue("ℹ ") + msg),
+  success: (msg: string) => console.log(chalk.green("✓ ") + msg),
+  warning: (msg: string) => console.log(chalk.yellow("⚠ ") + msg),
+  error: (msg: string) => console.log(chalk.red("✖ ") + msg),
+  section: (title: string) =>
+    console.log("\n" + chalk.bold.cyan(`=== ${title} ===`)),
+  divider: () => console.log(chalk.gray("─".repeat(80))),
+  json: (obj: any) => console.log(chalk.gray(JSON.stringify(obj, null, 2))),
+};
+
+// Add constants
+const TOKEN_LIMIT = 2000; // Set a reasonable limit for tokens
 
 // Define Zod schemas for our analysis structure
 const CodeChangeSchema = z.object({
@@ -54,6 +71,254 @@ const DEFAULT_ANALYSIS = {
     explanation: "No React concept analysis available",
   },
 };
+
+// Cache static parts of the prompt
+const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACTLY this JSON structure:
+{
+  "codeChanges": [
+    {
+      "type": "New Feature|Refactor|Chore|Cleanup|Config",
+      "file": "path/to/file",
+      "lines": "Include file names, line numbers, and up to 10 lines of code snippets.",
+      "explanation": "Explain each change in simple, non-technical terms."
+    }
+  ],
+  "architectureDiagram": {
+    "diagram": "mermaid diagram code starting with graph TD. Label components with actual code names.",
+    "explanation": "explanation of the architecture"
+  },
+  "reactConcept": {
+    "concept": "Select one core React concept to explain.",
+    "codeSnippet": "Use a short code snippet (max 5-7 lines).",
+    "explanation": "Keep the explanation beginner-friendly."
+  }
+}`;
+
+const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
+
+{
+  "codeChanges": [
+    {
+      "type": "New Feature",
+      "file": "src/components/Editor/Block.tsx",
+      "lines": "68–88",
+      "codeSnippet": [
+        "68: const renderContent = () => {",
+        "69:   if (block.state === \\"completed\\") {",
+        "70:     return \`@\${block.selectedItem?.title}\`;",
+        "71:   }",
+        "72:   if (block.state === \\"searching\\") {",
+        "73:     return \`\${block.searchQuery || \\"select item\\"}\`;",
+        "74:   }",
+        "75: };",
+        "76: return <span>{renderContent()}</span>;"
+      ],
+      "explanation": "We added a new rule to show names when people type @. The computer checks if the name is finished or still being searched."
+    }
+  ],
+  "architectureDiagram": {
+    "diagram": "graph TD\\n  EditorState --> TextBlock\\n  EditorState --> MentionBlock\\n  TextBlock --> content\\n  MentionBlock --> searchQuery\\n  MentionBlock --> selections",
+    "explanation": "The computer stores words in little blocks. Some blocks have regular text. Some blocks show names with @."
+  },
+  "reactConcept": {
+    "concept": "React's useState",
+    "codeSnippet": "const [state, setState] = useState({ blocks: [createTextBlock()], cursor: { blockIndex: 0, offset: 0 } });",
+    "explanation": "React has a magic memory called useState. It helps the app remember what you're typing, like a sticky note that React checks when drawing the screen. When you type something new, setState updates the note so React can show the change."
+  }
+}`;
+
+// Add cache helpers
+function generateDiffHash(diff: string): string {
+  return crypto.createHash("md5").update(diff).digest("hex");
+}
+
+// Add error handling for cache operations
+async function getCachedAnalysis(diffHash: string) {
+  try {
+    if (!prisma) {
+      console.error("Prisma client is not initialized");
+      return null;
+    }
+    return await prisma.analysisCache.findUnique({
+      where: { diffHash },
+    });
+  } catch (error) {
+    console.error("Error accessing cache:", error);
+    return null;
+  }
+}
+
+// Enhanced cache helpers
+interface DiffSignature {
+  files: string[];
+  changeTypes: Set<string>;
+  changeCount: number;
+  mainChanges: string[];
+}
+
+function generateDiffSignature(diff: string): DiffSignature {
+  const lines = diff.split("\n");
+  const files = new Set<string>();
+  const changeTypes = new Set<string>();
+  let changeCount = 0;
+  const mainChanges = new Set<string>();
+
+  let currentFile = "";
+
+  lines.forEach((line) => {
+    if (line.startsWith("diff --git")) {
+      currentFile = line.split(" b/")[1];
+      files.add(currentFile);
+    } else if (line.startsWith("+") || line.startsWith("-")) {
+      changeCount++;
+
+      // Identify change type
+      if (line.includes("import ")) changeTypes.add("import");
+      if (line.includes("function ")) changeTypes.add("function");
+      if (line.includes("class ")) changeTypes.add("class");
+      if (line.includes("interface ")) changeTypes.add("interface");
+      if (line.includes("const ")) changeTypes.add("const");
+
+      // Store significant changes (function definitions, class declarations, etc.)
+      if (line.match(/^[+-].*?(function|class|interface|type|enum)\s+\w+/)) {
+        mainChanges.add(line.replace(/^[+-]/, "").trim());
+      }
+    }
+  });
+
+  return {
+    files: Array.from(files),
+    changeTypes: changeTypes,
+    changeCount,
+    mainChanges: Array.from(mainChanges),
+  };
+}
+
+function calculateDiffSimilarity(
+  sig1: DiffSignature,
+  sig2: DiffSignature
+): number {
+  // File similarity (30% weight)
+  const fileIntersection = sig1.files.filter((f) => sig2.files.includes(f));
+  const fileSimilarity =
+    fileIntersection.length / Math.max(sig1.files.length, sig2.files.length);
+
+  // Change type similarity (20% weight)
+  const typeIntersection = new Set(
+    [...sig1.changeTypes].filter((x) => sig2.changeTypes.has(x))
+  );
+  const typeSimilarity =
+    typeIntersection.size /
+    Math.max(sig1.changeTypes.size, sig2.changeTypes.size);
+
+  // Change count similarity (20% weight)
+  const countSimilarity =
+    1 -
+    Math.abs(sig1.changeCount - sig2.changeCount) /
+      Math.max(sig1.changeCount, sig2.changeCount);
+
+  // Main changes similarity (30% weight)
+  const mainChangeIntersection = sig1.mainChanges.filter((c) =>
+    sig2.mainChanges.includes(c)
+  );
+  const mainChangeSimilarity =
+    mainChangeIntersection.length /
+    Math.max(sig1.mainChanges.length, sig2.mainChanges.length);
+
+  return (
+    fileSimilarity * 0.3 +
+    typeSimilarity * 0.2 +
+    countSimilarity * 0.2 +
+    mainChangeSimilarity * 0.3
+  );
+}
+
+async function findSimilarAnalysis(diff: string, similarityThreshold = 0.8) {
+  try {
+    if (!prisma) {
+      console.error("Prisma client is not initialized");
+      return null;
+    }
+
+    const signature = generateDiffSignature(diff);
+
+    // Get recent cache entries (limit to last 100 to avoid performance issues)
+    const recentCaches = await prisma.analysisCache.findMany({
+      take: 100,
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    let bestMatch = null;
+    let highestSimilarity = 0;
+
+    for (const cache of recentCaches) {
+      try {
+        const cachedSignature = generateDiffSignature(cache.diff);
+        const similarity = calculateDiffSimilarity(signature, cachedSignature);
+
+        if (
+          similarity > similarityThreshold &&
+          similarity > highestSimilarity
+        ) {
+          highestSimilarity = similarity;
+          bestMatch = cache;
+        }
+      } catch (error) {
+        console.error("Error comparing with cached diff:", error);
+        continue;
+      }
+    }
+
+    return bestMatch;
+  } catch (error) {
+    console.error("Error finding similar analysis:", error);
+    return null;
+  }
+}
+
+async function cacheAnalysis(diffHash: string, diff: string, analysis: any) {
+  try {
+    if (!prisma) {
+      console.error("Prisma client is not initialized");
+      return;
+    }
+    await prisma.analysisCache.create({
+      data: {
+        diffHash,
+        diff,
+        analysis,
+        createdAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Failed to cache analysis:", error);
+  }
+}
+
+// Add cost calculation constants
+const CLAUDE_COSTS = {
+  input: 0.008 / 1000, // $0.008 per 1K input tokens
+  output: 0.024 / 1000, // $0.024 per 1K output tokens
+};
+
+// Add token counting helper
+function estimateTokenCount(text: string): number {
+  // Rough estimation: ~4 characters per token on average
+  return Math.ceil(text.length / 4);
+}
+
+function calculateCost(inputTokens: number, outputTokens: number): string {
+  const inputCost = (inputTokens * CLAUDE_COSTS.input).toFixed(4);
+  const outputCost = (outputTokens * CLAUDE_COSTS.output).toFixed(4);
+  const totalCost = (Number(inputCost) + Number(outputCost)).toFixed(4);
+
+  return `Cost Breakdown:
+  Input  (${inputTokens.toLocaleString()} tokens): $${inputCost}
+  Output (${outputTokens.toLocaleString()} tokens): $${outputCost}
+  Total: $${totalCost}`;
+}
 
 export async function GET(
   req: NextRequest,
@@ -282,81 +547,134 @@ export async function GET(
 
 async function generateAnalysis(diff: string) {
   if (!process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY) {
-    console.log("No Anthropic API key found");
+    log.error("No Anthropic API key found");
     return DEFAULT_ANALYSIS;
   }
 
-  const prompt = `You are an expert code reviewer. Analyze this git diff and provide a detailed analysis, focusing on important code changes.
+  log.section("Processing Diff");
+  log.info("Filtering irrelevant changes...");
+
+  // Filter out irrelevant changes to reduce context length
+  const filteredDiff = diff
+    .split("\n")
+    .filter((line) => {
+      // Skip package-lock.json changes
+      if (line.includes("package-lock.json")) return false;
+      // Skip dist/build directory changes
+      if (line.includes("/dist/") || line.includes("/build/")) return false;
+      // Skip test files unless they're the main changes
+      if (line.includes(".test.") || line.includes(".spec.")) return false;
+      // Skip pure whitespace changes
+      if (line.trim() === "+" || line.trim() === "-") return false;
+      // Skip comment-only changes
+      if (line.trim().startsWith("+ //") || line.trim().startsWith("- //"))
+        return false;
+      return true;
+    })
+    .join("\n");
+
+  log.info("Extracting meaningful changes...");
+  // Extract only the meaningful parts of the diff
+  const meaningfulDiff = filteredDiff
+    .split("\n")
+    .filter((line) => {
+      // Keep file headers
+      if (line.startsWith("diff --git")) return true;
+      // Keep actual code changes
+      if (line.startsWith("+") || line.startsWith("-")) return true;
+      // Keep a few lines of context around changes
+      if (line.startsWith("@@ ")) return true;
+      return false;
+    })
+    .join("\n");
+
+  const estimatedTokens = estimateTokenCount(meaningfulDiff);
+  log.info(`Initial token estimate: ${estimatedTokens.toLocaleString()}`);
+
+  // If still too long, take most important parts
+  let finalDiff = meaningfulDiff;
+  if (estimatedTokens > TOKEN_LIMIT) {
+    log.warning(`Diff exceeds token limit (${TOKEN_LIMIT}), truncating...`);
+    // Extract file headers and changes, prioritize actual code changes
+    const changes = meaningfulDiff.split("diff --git");
+    const importantChanges = changes.filter((change) => {
+      // Prioritize src/ directory changes
+      if (change.includes(" a/src/")) return true;
+      // Prioritize actual code files
+      if (
+        change.includes(".ts") ||
+        change.includes(".tsx") ||
+        change.includes(".js")
+      )
+        return true;
+      return false;
+    });
+    finalDiff = importantChanges.slice(0, 3).join("diff --git"); // Take top 3 most important files
+  }
+
+  const diffHash = generateDiffHash(filteredDiff);
+  log.info(`Generated diff hash: ${diffHash}`);
+
+  // Check cache
+  log.section("Checking Cache");
+  const exactMatch = await getCachedAnalysis(diffHash);
+  if (exactMatch) {
+    log.success("Found exact cached analysis match");
+    return exactMatch.analysis;
+  }
+  log.info("No exact match found, checking for similar diffs...");
+
+  const similarMatch = await findSimilarAnalysis(filteredDiff);
+  if (similarMatch) {
+    log.success("Found similar cached analysis");
+    return similarMatch.analysis;
+  }
+  log.info("No similar matches found, generating new analysis...");
+
+  // Prepare prompt
+  log.section("Preparing Claude Request");
+  const prompt = `Generate a comprehensive summary of commit patch files with code snippets, architecture diagrams, and educational takeaways.
+
+${ANALYSIS_STRUCTURE_TEMPLATE}
+
+${ANALYSIS_EXAMPLE_TEMPLATE}
 
 Git Diff to analyze:
-${diff.slice(
-  0,
-  2500
-)} // Only analyze first 1500 chars of diff to stay within limit
-
-Provide a comprehensive analysis with EXACTLY this JSON structure:
-{
-  "codeChanges": [
-    {
-      "type": "New Feature|Refactor|Chore|Cleanup|Config",
-      "file": "path/to/file",
-      "lines": "line range",
-      "explanation": "markdown formatted explanation"
-    }
-  ],
-  "architectureDiagram": {
-    "diagram": "mermaid diagram code starting with graph TD",
-    "explanation": "explanation of the architecture"
-  },
-  "reactConcept": {
-    "concept": "name of the concept",
-    "codeSnippet": "relevant code snippet",
-    "explanation": "markdown formatted explanation"
-  }
-}
-
-ANALYSIS PRIORITIES:
-1. Focus first on new features and significant logic changes
-2. Next, highlight important refactoring that improves code structure
-3. Include cleanup changes that affect code quality or performance
-4. Only include config changes if they have significant impact
-5. For each change, explain WHY it matters, not just WHAT changed
-
-CRITICAL REQUIREMENTS:
-1. Response MUST be valid JSON - do not include ANY text outside the JSON structure
-2. Each code change type MUST be exactly one of: "New Feature", "Refactor", "Chore", "Cleanup", "Config"
-3. Architecture diagram MUST start with "graph TD"
-4. All fields are required - do not omit any fields
-5. Do not include markdown code blocks or any formatting around the JSON
-6. The response should be ONLY the JSON object, nothing else
-7. Order code changes by importance: New Features > Refactors > Cleanup > Config
-8. Focus explanations on impact and reasoning, not just describing the change`;
+${finalDiff}`;
 
   try {
-    console.log("=== Sending Analysis Request to Claude ===");
+    const inputTokenCount = estimateTokenCount(prompt);
+    log.info(`Input tokens: ${inputTokenCount.toLocaleString()}`);
+    log.info(`Diff length: ${finalDiff.length} characters`);
+
+    log.section("Calling Claude API");
     const analysis = await createCompletion(prompt);
 
     if (!analysis || !analysis.content || !analysis.content[0]) {
-      console.log("Received empty response from Claude");
+      log.error("Received empty response from Claude");
       return DEFAULT_ANALYSIS;
     }
 
     const content = analysis.content[0];
     if (!("text" in content) || !content.text) {
-      console.log("Unexpected content format from Claude:", content);
+      log.error("Unexpected content format from Claude");
       return DEFAULT_ANALYSIS;
     }
 
-    // Log the raw response for debugging
-    console.log("\n=== Raw Claude Response ===");
-    console.log("Response length:", content.text.length);
-    console.log("First 500 characters:", content.text.substring(0, 500));
+    const outputTokenCount = estimateTokenCount(content.text);
+    log.section("Claude API Usage");
+    log.info(calculateCost(inputTokenCount, outputTokenCount));
+
+    log.section("Processing Response");
+    log.info(`Response length: ${content.text.length} characters`);
+    log.info("First 500 characters of response:");
+    console.log(chalk.gray(content.text.substring(0, 500)));
+    log.divider();
 
     try {
-      // Try to extract JSON if it's wrapped in code blocks
+      // Extract and clean JSON
+      log.info("Extracting JSON from response...");
       let jsonStr = content.text;
-
-      // First try to find a valid JSON object anywhere in the response
       const jsonMatch = jsonStr.match(/({[\s\S]*})/);
       if (jsonMatch) {
         jsonStr = jsonMatch[1];
@@ -366,30 +684,35 @@ CRITICAL REQUIREMENTS:
         jsonStr = jsonStr.split("```")[1].split("```")[0].trim();
       }
 
-      // Clean up any remaining non-JSON content
       jsonStr = jsonStr.replace(/^[^{]*({[\s\S]*})[^}]*$/, "$1");
 
-      console.log("\n=== Cleaned JSON string ===");
-      console.log(jsonStr);
-
+      log.info("Parsing JSON...");
       let parsedResponse;
       try {
         parsedResponse = JSON.parse(jsonStr);
+        log.success("JSON parsed successfully");
       } catch (parseError) {
-        console.error("\n=== JSON Parse Error ===");
-        console.error("Error:", parseError);
-        return DEFAULT_ANALYSIS; // Return default on parse error
+        log.error("JSON Parse Error:");
+        console.error(chalk.red(parseError));
+        return DEFAULT_ANALYSIS;
       }
 
       try {
+        log.info("Validating analysis structure...");
         const validatedAnalysis = AnalysisSchema.parse(parsedResponse);
-        console.log("\n=== Successfully validated with Zod ===");
+        log.success("Analysis validated successfully");
+
+        log.info("Caching analysis...");
+        await cacheAnalysis(diffHash, filteredDiff, validatedAnalysis);
+        log.success("Analysis cached");
+
         return validatedAnalysis;
       } catch (zodError) {
         if (zodError instanceof z.ZodError) {
-          console.error("\n=== Zod Validation Errors ===");
-          console.error(zodError.errors);
+          log.error("Validation Errors:");
+          console.error(chalk.red(zodError.errors));
 
+          log.info("Attempting to fix response...");
           // Try to fix the response
           const fixedResponse = {
             codeChanges: Array.isArray(parsedResponse.codeChanges)
@@ -426,22 +749,22 @@ CRITICAL REQUIREMENTS:
           try {
             return AnalysisSchema.parse(fixedResponse);
           } catch (finalError) {
-            console.error("\n=== Failed to fix response ===");
+            log.error("\n=== Failed to fix response ===");
             return DEFAULT_ANALYSIS; // Return default if fix fails
           }
         }
         return DEFAULT_ANALYSIS; // Return default on validation error
       }
     } catch (error) {
-      console.error("\n=== Analysis Processing Error ===");
-      console.error(error);
+      log.error("Analysis Processing Error:");
+      console.error(chalk.red(error));
       return DEFAULT_ANALYSIS; // Return default on any error
     }
   } catch (error) {
-    console.log("=== Claude API Error ===", {
-      message: error instanceof Error ? error.message : "Unknown error",
-      details: error instanceof Error ? error.stack : String(error),
-    });
+    log.error("Claude API Error:");
+    console.error(
+      chalk.red(error instanceof Error ? error.message : String(error))
+    );
     return DEFAULT_ANALYSIS;
   }
 }

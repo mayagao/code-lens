@@ -73,3 +73,12 @@ model CommitAnalysis {
 
   @@unique([repositoryId, commitSha])
 }
+
+model AnalysisCache {
+  diffHash  String   @id
+  diff      String   @db.Text
+  analysis  Json
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
