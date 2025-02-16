@@ -5,6 +5,8 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import mermaid from "mermaid";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/cjs/styles/prism";
 
 interface Commit {
   sha: string;
@@ -41,6 +43,76 @@ interface CommitAnalysis {
     explanation: string;
   };
 }
+
+// Helper function to detect language from file extension
+function getLanguageFromFile(file: string | undefined): string {
+  if (!file) return "typescript"; // Default to typescript if no file provided
+
+  const parts = file.split(".");
+  if (parts.length <= 1) return "typescript"; // No extension found
+
+  const ext = parts[parts.length - 1].toLowerCase();
+  switch (ext) {
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+      return "javascript";
+    case "py":
+      return "python";
+    case "rb":
+      return "ruby";
+    case "go":
+      return "go";
+    case "java":
+      return "java";
+    case "php":
+      return "php";
+    case "css":
+      return "css";
+    case "html":
+      return "html";
+    case "json":
+      return "json";
+    case "yml":
+    case "yaml":
+      return "yaml";
+    case "md":
+      return "markdown";
+    case "sh":
+    case "bash":
+      return "bash";
+    default:
+      return "typescript"; // Default to typescript for unknown extensions
+  }
+}
+
+// Add helper function for safe line number parsing
+function getStartingLineNumber(lineRange: string | undefined): number {
+  if (!lineRange) return 1;
+  const parts = lineRange.split("-");
+  const startLine = parseInt(parts[0]);
+  return isNaN(startLine) ? 1 : startLine;
+}
+
+// Add custom components for ReactMarkdown
+const MarkdownComponents = {
+  code({ node, inline, className, children, ...props }: any) {
+    return (
+      <code
+        className={`${className} ${
+          inline
+            ? "bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-sm font-mono"
+            : ""
+        }`}
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  },
+};
 
 export default function CommitAnalysisPage() {
   const params = useParams();
@@ -404,13 +476,36 @@ export default function CommitAnalysisPage() {
                     <span className="text-gray-600">{change.file}</span>
                     <span className="text-gray-500">({change.lines})</span>
                   </div>
-                  {change.codeSnippet && (
-                    <pre className="bg-gray-800 text-gray-100 p-4 rounded-md mb-3 overflow-x-auto">
-                      <code>{change.codeSnippet.join("\n")}</code>
-                    </pre>
+                  {change.codeSnippet && change.codeSnippet.length > 0 && (
+                    <div className="mb-3">
+                      <SyntaxHighlighter
+                        language={getLanguageFromFile(change.file)}
+                        style={oneDark}
+                        showLineNumbers={true}
+                        startingLineNumber={getStartingLineNumber(change.lines)}
+                        customStyle={{
+                          margin: 0,
+                          borderRadius: "0.375rem",
+                          fontSize: "0.875rem",
+                        }}
+                        lineNumberStyle={{
+                          minWidth: "3em",
+                          paddingRight: "1em",
+                          color: "#606060",
+                          textAlign: "right",
+                          userSelect: "none",
+                        }}
+                      >
+                        {change.codeSnippet
+                          .map((line) => line.split(": ").slice(1).join(": "))
+                          .join("\n")}
+                      </SyntaxHighlighter>
+                    </div>
                   )}
                   <div className="prose prose-sm max-w-none">
-                    <ReactMarkdown>{change.explanation}</ReactMarkdown>
+                    <ReactMarkdown components={MarkdownComponents}>
+                      {change.explanation}
+                    </ReactMarkdown>
                   </div>
                 </div>
               ))
@@ -471,13 +566,37 @@ export default function CommitAnalysisPage() {
                     <span>{reactConcept?.file}</span>
                     <span>({reactConcept?.lines})</span>
                   </div>
-                  {reactConcept?.codeSnippet && (
-                    <pre className="bg-gray-800 text-gray-100 p-4 rounded-md mb-3 overflow-x-auto">
-                      <code>{reactConcept.codeSnippet.join("\n")}</code>
-                    </pre>
-                  )}
+                  {reactConcept?.codeSnippet &&
+                    reactConcept.codeSnippet.length > 0 && (
+                      <div className="mb-3">
+                        <SyntaxHighlighter
+                          language={getLanguageFromFile(reactConcept.file)}
+                          style={oneDark}
+                          showLineNumbers={true}
+                          startingLineNumber={getStartingLineNumber(
+                            reactConcept.lines
+                          )}
+                          customStyle={{
+                            margin: 0,
+                            borderRadius: "0.375rem",
+                            fontSize: "0.875rem",
+                          }}
+                          lineNumberStyle={{
+                            minWidth: "3em",
+                            paddingRight: "1em",
+                            color: "#606060",
+                            textAlign: "right",
+                            userSelect: "none",
+                          }}
+                        >
+                          {reactConcept.codeSnippet
+                            .map((line) => line.split(": ").slice(1).join(": "))
+                            .join("\n")}
+                        </SyntaxHighlighter>
+                      </div>
+                    )}
                   <div className="prose prose-sm max-w-none">
-                    <ReactMarkdown>
+                    <ReactMarkdown components={MarkdownComponents}>
                       {reactConcept?.explanation || ""}
                     </ReactMarkdown>
                   </div>

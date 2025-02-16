@@ -89,7 +89,7 @@ const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACT
 {
   "codeChanges": [
     {
-      "type": "New Feature|Refactor|Improvement|Chore|Cleanup|Config",
+      "type": "New Feature|Refactor|UI|Chore|Cleanup|Config",
       "file": "path/to/file",
       "lines": "line numbers in format like 68-88",
       "codeSnippet": ["array of code lines with line numbers", "only for New Feature, Refactor, and Improvement types"],
@@ -110,8 +110,8 @@ const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACT
 }
 
 IMPORTANT NOTES:
-1. Sort code changes by type: New Feature, Refactor, and Improvement first, followed by Chore, Cleanup, and Config
-2. Include code snippets ONLY for New Feature, Refactor, and Improvement changes
+1. Sort code changes by type: Feature, Refactor, and UI first, followed by Chore, Cleanup, and Config
+2. Include code snippets ONLY for New Feature, Refactor, and UI changes
 3. For Chore, Cleanup, and Config changes, omit the codeSnippet field
 4. Each code snippet line MUST include the actual line number as prefix (e.g. "68: const foo = bar;")
 5. Ensure line numbers in the 'lines' field exactly match the actual code snippet line numbers
@@ -587,19 +587,30 @@ async function generateAnalysis(diff: string) {
     return DEFAULT_ANALYSIS;
   }
 
+  log.section("Original Diff");
+  console.log(chalk.gray(diff));
+  log.divider();
+
   log.section("Processing Diff");
   log.info("Filtering irrelevant changes...");
 
-  // Filter out irrelevant changes to reduce context length
-  const filteredDiff = diff
+  // First split the diff into individual file changes
+  const fileChanges = diff.split("diff --git");
+
+  // Filter to only include src/ files and join back
+  const filteredDiff = fileChanges
+    .filter((change) => {
+      if (!change.trim()) return false;
+      // Only keep changes to files in src/ directory
+      return change.includes(" a/src/") || change.includes(" b/src/");
+    })
+    .join("diff --git");
+
+  log.info("Extracting meaningful changes...");
+  // Extract only the meaningful parts of the diff
+  const meaningfulDiff = filteredDiff
     .split("\n")
     .filter((line) => {
-      // Skip package-lock.json changes
-      if (line.includes("package-lock.json")) return false;
-      // Skip dist/build directory changes
-      if (line.includes("/dist/") || line.includes("/build/")) return false;
-      // Skip test files unless they're the main changes
-      if (line.includes(".test.") || line.includes(".spec.")) return false;
       // Skip pure whitespace changes
       if (line.trim() === "+" || line.trim() === "-") return false;
       // Skip comment-only changes
@@ -609,44 +620,58 @@ async function generateAnalysis(diff: string) {
     })
     .join("\n");
 
-  log.info("Extracting meaningful changes...");
-  // Extract only the meaningful parts of the diff
-  const meaningfulDiff = filteredDiff
-    .split("\n")
-    .filter((line) => {
-      // Keep file headers
-      if (line.startsWith("diff --git")) return true;
-      // Keep actual code changes
-      if (line.startsWith("+") || line.startsWith("-")) return true;
-      // Keep a few lines of context around changes
-      if (line.startsWith("@@ ")) return true;
-      return false;
-    })
-    .join("\n");
-
   const estimatedTokens = estimateTokenCount(meaningfulDiff);
   log.info(`Initial token estimate: ${estimatedTokens.toLocaleString()}`);
 
-  // If still too long, take most important parts
+  // If still too long, take most important parts but keep more files
   let finalDiff = meaningfulDiff;
   if (estimatedTokens > TOKEN_LIMIT) {
-    log.warning(`Diff exceeds token limit (${TOKEN_LIMIT}), truncating...`);
+    log.warning(`Diff exceeds token limit (${TOKEN_LIMIT}), optimizing...`);
     // Extract file headers and changes, prioritize actual code changes
     const changes = meaningfulDiff.split("diff --git");
-    const importantChanges = changes.filter((change) => {
-      // Prioritize src/ directory changes
-      if (change.includes(" a/src/")) return true;
-      // Prioritize actual code files
-      if (
-        change.includes(".ts") ||
-        change.includes(".tsx") ||
-        change.includes(".js")
-      )
-        return true;
-      return false;
-    });
-    finalDiff = importantChanges.slice(0, 3).join("diff --git"); // Take top 3 most important files
+    const importantChanges = changes
+      .filter((change) => {
+        // Skip empty changes
+        if (!change.trim()) return false;
+        // Only include src/ files
+        if (!change.includes(" a/src/")) return false;
+        // Prioritize React/TypeScript files
+        if (
+          change.includes(".tsx") ||
+          change.includes(".ts") ||
+          change.includes(".jsx") ||
+          change.includes(".js")
+        )
+          return true;
+        return false;
+      })
+      .map((change) => {
+        // Keep the file header and hunk headers
+        const lines = change.split("\n");
+        return lines
+          .filter(
+            (line) =>
+              line.startsWith("diff --git") ||
+              line.startsWith("@@") ||
+              line.startsWith("+") ||
+              line.startsWith("-") ||
+              // Keep one line of context around changes
+              (line.startsWith(" ") &&
+                (lines[lines.indexOf(line) + 1]?.startsWith("+") ||
+                  lines[lines.indexOf(line) + 1]?.startsWith("-") ||
+                  lines[lines.indexOf(line) - 1]?.startsWith("+") ||
+                  lines[lines.indexOf(line) - 1]?.startsWith("-")))
+          )
+          .join("\n");
+      });
+
+    // Take top 4 most important files
+    finalDiff = importantChanges.slice(0, 4).join("\ndiff --git");
   }
+
+  log.section("Final Processed Diff");
+  console.log(chalk.gray(finalDiff));
+  log.divider();
 
   const diffHash = generateDiffHash(filteredDiff);
   log.info(`Generated diff hash: ${diffHash}`);
@@ -696,6 +721,10 @@ ${finalDiff}`;
       log.error("Unexpected content format from Claude");
       return DEFAULT_ANALYSIS;
     }
+
+    log.section("Claude's Full Response");
+    console.log(chalk.gray(content.text));
+    log.divider();
 
     const outputTokenCount = estimateTokenCount(content.text);
     log.section("Claude API Usage");
@@ -824,7 +853,7 @@ function validateChangeType(type: string): boolean {
   const validTypes = [
     "New Feature",
     "Refactor",
-    "Improvement",
+    "UI",
     "Chore",
     "Cleanup",
     "Config",
