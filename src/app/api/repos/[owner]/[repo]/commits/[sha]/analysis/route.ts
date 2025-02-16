@@ -28,9 +28,11 @@ const TOKEN_LIMIT = 2000; // Set a reasonable limit for tokens
 
 // Define Zod schemas for our analysis structure
 const CodeChangeSchema = z.object({
-  type: z.enum(["New Feature", "Refactor", "Chore", "Cleanup", "Config"]),
+  type: z.enum(["Feature", "Refactor", "Logic", "Chore", "Cleanup", "Config"]),
   file: z.string(),
   lines: z.string(),
+  summary: z.string(),
+  codeSnippet: z.array(z.string()).optional(),
   explanation: z.string(),
 });
 
@@ -41,7 +43,7 @@ const ArchitectureDiagramSchema = z.object({
 
 const ReactConceptSchema = z.object({
   concept: z.string(),
-  codeSnippet: z.string(),
+  codeSnippet: z.array(z.string()),
   explanation: z.string(),
 });
 
@@ -57,17 +59,21 @@ const DEFAULT_ANALYSIS = {
     {
       type: "Chore" as const,
       file: "unknown",
-      lines: "N/A",
+      lines: "0-0",
+      summary: "No changes detected",
       explanation: "No analysis available",
     },
   ],
   architectureDiagram: {
-    diagram: "graph TD\n  A[No Analysis] -->|Generate New| B[Try Again]",
+    diagram: "graph TD\n  A[No Analysis] --> B[Try Again]\n  B --> A",
     explanation: "No architecture diagram available",
   },
   reactConcept: {
     concept: "None",
-    codeSnippet: "// No code snippet available",
+    codeSnippet: [
+      "0: // No code snippet available",
+      "1: // Please try regenerating the analysis",
+    ],
     explanation: "No React concept analysis available",
   },
 };
@@ -77,9 +83,18 @@ const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACT
 {
   "codeChanges": [
     {
-      "type": "New Feature|Refactor|Chore|Cleanup|Config",
+      "type": "Feature|Refactor|Logic|Chore|Cleanup|Config",
       "file": "path/to/file",
-      "lines": "Include file names, line numbers, and up to 10 lines of code snippets.",
+      "lines": "line_start-line_end",
+      "summary": "One sentence summary of the core change",
+      "codeSnippet": [
+        "Each line MUST be prefixed with line number and colon",
+        "Format: 'line_number: actual_code'",
+        "Example: '42: function handleClick() {'",
+        "Include 5-10 lines of relevant code with context",
+        "Always include the actual line numbers from the file",
+        "ONLY include code snippets for Feature, Refactor, and Logic changes"
+      ],
       "explanation": "Explain each change in simple, non-technical terms."
     }
   ],
@@ -89,7 +104,11 @@ const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACT
   },
   "reactConcept": {
     "concept": "Select one core React concept to explain.",
-    "codeSnippet": "Use a short code snippet (max 5-7 lines).",
+    "codeSnippet": [
+      "Each line MUST be prefixed with line number and colon",
+      "Format: 'line_number: actual_code'",
+      "Example: '42: const [state, setState] = useState(null);'"
+    ],
     "explanation": "Keep the explanation beginner-friendly."
   }
 }`;
@@ -99,9 +118,10 @@ const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
 {
   "codeChanges": [
     {
-      "type": "New Feature",
+      "type": "Feature",
       "file": "src/components/Editor/Block.tsx",
       "lines": "68–88",
+      "summary": "Added @ mention functionality to show user names in the editor",
       "codeSnippet": [
         "68: const renderContent = () => {",
         "69:   if (block.state === \\"completed\\") {",
@@ -122,7 +142,12 @@ const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
   },
   "reactConcept": {
     "concept": "React's useState",
-    "codeSnippet": "const [state, setState] = useState({ blocks: [createTextBlock()], cursor: { blockIndex: 0, offset: 0 } });",
+    "codeSnippet": [
+      "42: const [state, setState] = useState({",
+      "43:   blocks: [createTextBlock()],",
+      "44:   cursor: { blockIndex: 0, offset: 0 }",
+      "45: });"
+    ],
     "explanation": "React has a magic memory called useState. It helps the app remember what you're typing, like a sticky note that React checks when drawing the screen. When you type something new, setState updates the note so React can show the change."
   }
 }`;
@@ -320,6 +345,24 @@ function calculateCost(inputTokens: number, outputTokens: number): string {
   Total: $${totalCost}`;
 }
 
+// Helper function to generate a summary from code changes
+function generateSummary(codeChanges: any[], commitMessage: string): string {
+  // Try to find a Feature or Refactor change with a summary
+  const significantChange = codeChanges.find(
+    (change) =>
+      (change.type === "Feature" || change.type === "Refactor") &&
+      change.summary
+  );
+
+  if (significantChange?.summary) {
+    // Ensure summary is not too long
+    return significantChange.summary.split(" ").slice(0, 12).join(" ");
+  }
+
+  // Fall back to commit message, truncated to 12 words
+  return commitMessage.split(" ").slice(0, 12).join(" ");
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { owner: string; repo: string; sha: string } }
@@ -328,15 +371,85 @@ export async function GET(
   const forceRegenerate = req.nextUrl.searchParams.get("force") === "true";
 
   try {
+    if (!prisma) {
+      return new Response(
+        JSON.stringify({
+          error: true,
+          details: "Database connection not initialized",
+          analysis: DEFAULT_ANALYSIS,
+          rawResponse: null,
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
     // First try to find existing analysis in database
-    const existingAnalysis = await prisma.commitAnalysis.findFirst({
-      where: {
-        AND: [{ repository: { owner, name: repo } }, { commitSha: sha }],
-      },
-      include: {
-        repository: true,
-      },
-    });
+    let existingAnalysis;
+    try {
+      existingAnalysis = await prisma.commitAnalysis.findFirst({
+        where: {
+          AND: [{ repository: { owner, name: repo } }, { commitSha: sha }],
+        },
+        include: {
+          repository: true,
+        },
+      });
+    } catch (dbError) {
+      console.error("Error querying existing analysis:", dbError);
+      return new Response(
+        JSON.stringify({
+          error: true,
+          details: "Failed to query existing analysis",
+          analysis: DEFAULT_ANALYSIS,
+          rawResponse:
+            dbError instanceof Error ? dbError.message : String(dbError),
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Get commit details to access the commit message
+    let commitDetails;
+    try {
+      commitDetails = await GitHubService.getCommit(owner, repo, sha);
+      if (!commitDetails) {
+        return new Response(
+          JSON.stringify({
+            error: true,
+            details: "Failed to fetch commit details",
+            analysis: DEFAULT_ANALYSIS,
+            rawResponse: "No commit details returned from GitHub",
+          }),
+          {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      }
+    } catch (error) {
+      console.error("Error fetching commit details:", error);
+      return new Response(
+        JSON.stringify({
+          error: true,
+          details: "Failed to fetch commit details",
+          analysis: DEFAULT_ANALYSIS,
+          rawResponse: error instanceof Error ? error.message : String(error),
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const commitMessage =
+      commitDetails?.commit?.message || "No commit message available";
 
     // Check if we have a valid existing analysis with code changes and not forcing regeneration
     if (
@@ -356,11 +469,14 @@ export async function GET(
           error: false,
           details: null,
           analysis: {
-            codeChanges: existingAnalysis.codeChanges,
-            architectureDiagram: existingAnalysis.architectureDiagram,
-            reactConcept: existingAnalysis.reactConcept,
+            codeChanges: existingAnalysis.codeChanges || [],
+            architectureDiagram:
+              existingAnalysis.architectureDiagram ||
+              DEFAULT_ANALYSIS.architectureDiagram,
+            reactConcept:
+              existingAnalysis.reactConcept || DEFAULT_ANALYSIS.reactConcept,
           },
-          rawResponse: null,
+          summary: existingAnalysis.summary || commitMessage,
         }),
         {
           status: 200,
@@ -369,61 +485,35 @@ export async function GET(
       );
     }
 
-    // If forcing regeneration or no existing analysis, proceed with new analysis
-    console.log(
-      `${
-        forceRegenerate ? "Force regenerating" : "Generating new"
-      } analysis for`,
-      owner,
-      repo,
-      sha
-    );
-
-    // Get or create repository with correct owner/name
-    const repository = await prisma.repository.upsert({
-      where: {
-        owner_name: {
-          owner,
-          name: repo,
-        },
-      },
-      create: {
-        owner,
-        name: repo,
-        githubId: `${owner}/${repo}`,
-        user: {
-          connectOrCreate: {
-            where: {
-              githubId: "anonymous",
-            },
-            create: {
-              name: "Anonymous",
-              githubId: "anonymous",
-            },
-          },
-        },
-      },
-      update: {
-        owner,
-        name: repo,
-        // Don't update githubId as it should remain the same
-      },
-    });
-
     // Get diff from GitHub and generate analysis
-    const diff = await getDiff(owner, repo, sha);
-    if (!diff) {
-      const message = `No diff content returned from GitHub for ${owner}/${repo}/${sha}`;
-      console.log(message);
+    let diff;
+    try {
+      diff = await getDiff(owner, repo, sha);
+      if (!diff) {
+        return new Response(
+          JSON.stringify({
+            error: true,
+            details: `No diff content returned from GitHub for ${owner}/${repo}/${sha}`,
+            analysis: DEFAULT_ANALYSIS,
+            rawResponse: null,
+          }),
+          {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      }
+    } catch (error) {
+      console.error("Error fetching diff:", error);
       return new Response(
         JSON.stringify({
           error: true,
-          details: message,
+          details: "Failed to fetch diff",
           analysis: DEFAULT_ANALYSIS,
-          rawResponse: null,
+          rawResponse: error instanceof Error ? error.message : String(error),
         }),
         {
-          status: 404,
+          status: 500,
           headers: { "Content-Type": "application/json" },
         }
       );
@@ -432,12 +522,10 @@ export async function GET(
     console.log(`Generating analysis with Claude for ${owner}/${repo}/${sha}`);
     const analysis = await generateAnalysis(diff);
     if (!analysis) {
-      const message = `Analysis generation returned no results for ${owner}/${repo}/${sha}`;
-      console.log(message);
       return new Response(
         JSON.stringify({
           error: true,
-          details: message,
+          details: `Analysis generation returned no results for ${owner}/${repo}/${sha}`,
           analysis: DEFAULT_ANALYSIS,
           rawResponse: null,
         }),
@@ -448,15 +536,72 @@ export async function GET(
       );
     }
 
-    // Store in database with new structure and repository info
+    // Get or create repository
+    let repository;
     try {
+      repository = await prisma.repository.upsert({
+        where: {
+          owner_name: {
+            owner,
+            name: repo,
+          },
+        },
+        create: {
+          owner,
+          name: repo,
+          githubId: `${owner}/${repo}`,
+          user: {
+            connectOrCreate: {
+              where: {
+                githubId: "anonymous",
+              },
+              create: {
+                name: "Anonymous",
+                githubId: "anonymous",
+              },
+            },
+          },
+        },
+        update: {
+          owner,
+          name: repo,
+        },
+      });
+
+      if (!repository || !repository.id) {
+        throw new Error("Failed to create/update repository");
+      }
+    } catch (error) {
+      console.error("Error upserting repository:", error);
+      return new Response(
+        JSON.stringify({
+          error: true,
+          details: "Failed to create/update repository",
+          analysis: DEFAULT_ANALYSIS,
+          rawResponse: error instanceof Error ? error.message : String(error),
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // After generating new analysis, create/update with summary
+    try {
+      const summary = generateSummary(analysis.codeChanges, commitMessage);
+
       const savedAnalysis = existingAnalysis
         ? await prisma.commitAnalysis.update({
             where: { id: existingAnalysis.id },
             data: {
-              codeChanges: analysis.codeChanges,
-              architectureDiagram: analysis.architectureDiagram,
-              reactConcept: analysis.reactConcept,
+              codeChanges: analysis.codeChanges || [],
+              architectureDiagram:
+                analysis.architectureDiagram ||
+                DEFAULT_ANALYSIS.architectureDiagram,
+              reactConcept:
+                analysis.reactConcept || DEFAULT_ANALYSIS.reactConcept,
+              summary,
               repository: {
                 connect: {
                   id: repository.id,
@@ -471,26 +616,47 @@ export async function GET(
             data: {
               repositoryId: repository.id,
               commitSha: sha,
-              codeChanges: analysis.codeChanges,
-              architectureDiagram: analysis.architectureDiagram,
-              reactConcept: analysis.reactConcept,
+              codeChanges: analysis.codeChanges || [],
+              architectureDiagram:
+                analysis.architectureDiagram ||
+                DEFAULT_ANALYSIS.architectureDiagram,
+              reactConcept:
+                analysis.reactConcept || DEFAULT_ANALYSIS.reactConcept,
+              summary,
             },
             include: {
               repository: true,
             },
           });
 
-      console.log("Successfully saved analysis for", owner, repo, sha);
+      if (!savedAnalysis) {
+        return new Response(
+          JSON.stringify({
+            error: true,
+            details: "Failed to save analysis",
+            analysis: analysis || DEFAULT_ANALYSIS,
+            rawResponse: null,
+          }),
+          {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      }
+
       return new Response(
         JSON.stringify({
           error: false,
           details: null,
           analysis: {
-            codeChanges: savedAnalysis.codeChanges,
-            architectureDiagram: savedAnalysis.architectureDiagram,
-            reactConcept: savedAnalysis.reactConcept,
+            codeChanges: savedAnalysis.codeChanges || [],
+            architectureDiagram:
+              savedAnalysis.architectureDiagram ||
+              DEFAULT_ANALYSIS.architectureDiagram,
+            reactConcept:
+              savedAnalysis.reactConcept || DEFAULT_ANALYSIS.reactConcept,
           },
-          rawResponse: null,
+          summary: savedAnalysis.summary || commitMessage,
         }),
         {
           status: 200,
@@ -499,7 +665,6 @@ export async function GET(
       );
     } catch (dbError) {
       console.error("Database error during analysis save:", dbError);
-      // Still return the analysis even if we fail to save it
       return new Response(
         JSON.stringify({
           error: true,
@@ -507,8 +672,8 @@ export async function GET(
             dbError instanceof Error
               ? dbError.message
               : "Unknown database error",
-          analysis: analysis,
-          rawResponse: null,
+          analysis: analysis || DEFAULT_ANALYSIS,
+          rawResponse: dbError instanceof Error ? dbError.stack : null,
         }),
         {
           status: 500,
@@ -517,12 +682,11 @@ export async function GET(
       );
     }
   } catch (error) {
-    // Safely handle the error object
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error occurred";
     const errorDetails = error instanceof Error ? error.stack : String(error);
 
-    console.log("Error in commit analysis:", {
+    console.error("Error in commit analysis:", {
       message: errorMessage,
       details: errorDetails,
       owner,
@@ -551,130 +715,111 @@ async function generateAnalysis(diff: string) {
     return DEFAULT_ANALYSIS;
   }
 
-  log.section("Processing Diff");
-  log.info("Filtering irrelevant changes...");
+  if (!diff || typeof diff !== "string") {
+    log.error("Invalid diff provided");
+    return DEFAULT_ANALYSIS;
+  }
 
-  // Filter out irrelevant changes to reduce context length
-  const filteredDiff = diff
-    .split("\n")
-    .filter((line) => {
-      // Skip package-lock.json changes
-      if (line.includes("package-lock.json")) return false;
-      // Skip dist/build directory changes
-      if (line.includes("/dist/") || line.includes("/build/")) return false;
-      // Skip test files unless they're the main changes
-      if (line.includes(".test.") || line.includes(".spec.")) return false;
-      // Skip pure whitespace changes
-      if (line.trim() === "+" || line.trim() === "-") return false;
-      // Skip comment-only changes
-      if (line.trim().startsWith("+ //") || line.trim().startsWith("- //"))
-        return false;
-      return true;
-    })
-    .join("\n");
+  try {
+    log.section("Processing Diff");
+    log.info("Filtering irrelevant changes...");
 
-  log.info("Extracting meaningful changes...");
-  // Extract only the meaningful parts of the diff
-  const meaningfulDiff = filteredDiff
-    .split("\n")
-    .filter((line) => {
-      // Keep file headers
-      if (line.startsWith("diff --git")) return true;
-      // Keep actual code changes
-      if (line.startsWith("+") || line.startsWith("-")) return true;
-      // Keep a few lines of context around changes
-      if (line.startsWith("@@ ")) return true;
-      return false;
-    })
-    .join("\n");
-
-  const estimatedTokens = estimateTokenCount(meaningfulDiff);
-  log.info(`Initial token estimate: ${estimatedTokens.toLocaleString()}`);
-
-  // If still too long, take most important parts
-  let finalDiff = meaningfulDiff;
-  if (estimatedTokens > TOKEN_LIMIT) {
-    log.warning(`Diff exceeds token limit (${TOKEN_LIMIT}), truncating...`);
-    // Extract file headers and changes, prioritize actual code changes
-    const changes = meaningfulDiff.split("diff --git");
-    const importantChanges = changes.filter((change) => {
-      // Prioritize src/ directory changes
-      if (change.includes(" a/src/")) return true;
-      // Prioritize actual code files
-      if (
-        change.includes(".ts") ||
-        change.includes(".tsx") ||
-        change.includes(".js")
-      )
+    // Filter out irrelevant changes to reduce context length
+    const filteredDiff = diff
+      .split("\n")
+      .filter((line) => {
+        // Skip package-lock.json changes
+        if (line.includes("package-lock.json")) return false;
+        // Skip dist/build directory changes
+        if (line.includes("/dist/") || line.includes("/build/")) return false;
+        // Skip test files unless they're the main changes
+        if (line.includes(".test.") || line.includes(".spec.")) return false;
+        // Skip pure whitespace changes
+        if (line.trim() === "+" || line.trim() === "-") return false;
+        // Skip comment-only changes
+        if (line.trim().startsWith("+ //") || line.trim().startsWith("- //"))
+          return false;
         return true;
-      return false;
-    });
-    finalDiff = importantChanges.slice(0, 3).join("diff --git"); // Take top 3 most important files
-  }
+      })
+      .join("\n");
 
-  const diffHash = generateDiffHash(filteredDiff);
-  log.info(`Generated diff hash: ${diffHash}`);
+    if (!filteredDiff) {
+      log.warning("No meaningful changes found in diff");
+      return DEFAULT_ANALYSIS;
+    }
 
-  // Check cache
-  log.section("Checking Cache");
-  const exactMatch = await getCachedAnalysis(diffHash);
-  if (exactMatch) {
-    log.success("Found exact cached analysis match");
-    return exactMatch.analysis;
-  }
-  log.info("No exact match found, checking for similar diffs...");
+    const diffHash = generateDiffHash(filteredDiff);
+    log.info(`Generated diff hash: ${diffHash}`);
 
-  const similarMatch = await findSimilarAnalysis(filteredDiff);
-  if (similarMatch) {
-    log.success("Found similar cached analysis");
-    return similarMatch.analysis;
-  }
-  log.info("No similar matches found, generating new analysis...");
+    // Check cache
+    log.section("Checking Cache");
+    const exactMatch = await getCachedAnalysis(diffHash);
+    if (exactMatch?.analysis) {
+      log.success("Found exact cached analysis match");
+      return exactMatch.analysis;
+    }
+    log.info("No exact match found, checking for similar diffs...");
 
-  // Prepare prompt
-  log.section("Preparing Claude Request");
-  const prompt = `Generate a comprehensive summary of commit patch files with code snippets, architecture diagrams, and educational takeaways.
+    const similarMatch = await findSimilarAnalysis(filteredDiff);
+    if (similarMatch?.analysis) {
+      log.success("Found similar cached analysis");
+      return similarMatch.analysis;
+    }
+    log.info("No similar matches found, generating new analysis...");
+
+    const prompt = `Generate a comprehensive summary of commit patch files with code snippets, architecture diagrams, and educational takeaways.
 
 ${ANALYSIS_STRUCTURE_TEMPLATE}
 
 ${ANALYSIS_EXAMPLE_TEMPLATE}
 
 Git Diff to analyze:
-${finalDiff}`;
+${filteredDiff}`;
 
-  try {
     const inputTokenCount = estimateTokenCount(prompt);
     log.info(`Input tokens: ${inputTokenCount.toLocaleString()}`);
-    log.info(`Diff length: ${finalDiff.length} characters`);
+    log.info(`Diff length: ${filteredDiff.length} characters`);
 
     log.section("Calling Claude API");
-    const analysis = await createCompletion(prompt);
+    const response = await createCompletion(prompt);
 
-    if (!analysis || !analysis.content || !analysis.content[0]) {
-      log.error("Received empty response from Claude");
+    if (!response) {
+      log.error("Received null response from Claude");
       return DEFAULT_ANALYSIS;
     }
 
-    const content = analysis.content[0];
-    if (!("text" in content) || !content.text) {
-      log.error("Unexpected content format from Claude");
+    const { content, usage } = response;
+    if (!content || !Array.isArray(content) || content.length === 0) {
+      log.error("Invalid response structure from Claude");
+      log.json(response);
       return DEFAULT_ANALYSIS;
     }
 
-    const outputTokenCount = estimateTokenCount(content.text);
+    const firstContent = content[0];
+    if (
+      !firstContent ||
+      firstContent.type !== "text" ||
+      typeof firstContent.text !== "string"
+    ) {
+      log.error("Invalid content structure from Claude");
+      log.json(firstContent);
+      return DEFAULT_ANALYSIS;
+    }
+
+    const outputTokenCount = estimateTokenCount(firstContent.text);
     log.section("Claude API Usage");
     log.info(calculateCost(inputTokenCount, outputTokenCount));
 
     log.section("Processing Response");
-    log.info(`Response length: ${content.text.length} characters`);
+    log.info(`Response length: ${firstContent.text.length} characters`);
     log.info("First 500 characters of response:");
-    console.log(chalk.gray(content.text.substring(0, 500)));
+    console.log(chalk.gray(firstContent.text.substring(0, 500)));
     log.divider();
 
     try {
       // Extract and clean JSON
       log.info("Extracting JSON from response...");
-      let jsonStr = content.text;
+      let jsonStr = firstContent.text;
       const jsonMatch = jsonStr.match(/({[\s\S]*})/);
       if (jsonMatch) {
         jsonStr = jsonMatch[1];
@@ -684,12 +829,20 @@ ${finalDiff}`;
         jsonStr = jsonStr.split("```")[1].split("```")[0].trim();
       }
 
+      if (!jsonStr) {
+        log.error("No JSON content found in response");
+        return DEFAULT_ANALYSIS;
+      }
+
       jsonStr = jsonStr.replace(/^[^{]*({[\s\S]*})[^}]*$/, "$1");
 
       log.info("Parsing JSON...");
       let parsedResponse;
       try {
         parsedResponse = JSON.parse(jsonStr);
+        if (!parsedResponse || typeof parsedResponse !== "object") {
+          throw new Error("Parsed response is not an object");
+        }
         log.success("JSON parsed successfully");
       } catch (parseError) {
         log.error("JSON Parse Error:");
@@ -702,11 +855,13 @@ ${finalDiff}`;
         const validatedAnalysis = AnalysisSchema.parse(parsedResponse);
         log.success("Analysis validated successfully");
 
-        log.info("Caching analysis...");
-        await cacheAnalysis(diffHash, filteredDiff, validatedAnalysis);
-        log.success("Analysis cached");
-
-        return validatedAnalysis;
+        if (validatedAnalysis) {
+          log.info("Caching analysis...");
+          await cacheAnalysis(diffHash, filteredDiff, validatedAnalysis);
+          log.success("Analysis cached");
+          return validatedAnalysis;
+        }
+        return DEFAULT_ANALYSIS;
       } catch (zodError) {
         if (zodError instanceof z.ZodError) {
           log.error("Validation Errors:");
@@ -720,6 +875,7 @@ ${finalDiff}`;
                   type: validateChangeType(change.type) ? change.type : "Chore",
                   file: change.file || "unknown",
                   lines: change.lines || "N/A",
+                  summary: change.summary || "No summary provided",
                   explanation: change.explanation || "No explanation provided",
                 }))
               : DEFAULT_ANALYSIS.codeChanges,
@@ -747,7 +903,10 @@ ${finalDiff}`;
           };
 
           try {
-            return AnalysisSchema.parse(fixedResponse);
+            const validatedFixedAnalysis = AnalysisSchema.parse(fixedResponse);
+            if (validatedFixedAnalysis) {
+              return validatedFixedAnalysis;
+            }
           } catch (finalError) {
             log.error("\n=== Failed to fix response ===");
             return DEFAULT_ANALYSIS; // Return default if fix fails
@@ -771,6 +930,13 @@ ${finalDiff}`;
 
 // Helper function to validate change type
 function validateChangeType(type: string): boolean {
-  const validTypes = ["New Feature", "Refactor", "Chore", "Cleanup", "Config"];
+  const validTypes = [
+    "Feature",
+    "Refactor",
+    "Logic",
+    "Chore",
+    "Cleanup",
+    "Config",
+  ];
   return validTypes.includes(type);
 }

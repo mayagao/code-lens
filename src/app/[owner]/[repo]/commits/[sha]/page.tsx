@@ -5,10 +5,12 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import mermaid from "mermaid";
+import CodeBlock from "@/components/CodeBlock";
 
 interface Commit {
   sha: string;
   message: string;
+  summary?: string;
   author: {
     name: string;
     avatarUrl: string;
@@ -26,6 +28,8 @@ interface CommitAnalysis {
     type: string;
     file: string;
     lines: string;
+    summary: string;
+    codeSnippet?: string[];
     explanation: string;
   }[];
   architectureDiagram: {
@@ -34,9 +38,69 @@ interface CommitAnalysis {
   };
   reactConcept: {
     concept: string;
-    codeSnippet: string;
+    codeSnippet: string[];
     explanation: string;
   };
+}
+
+// Helper function to get color classes for different change types
+function getTypeColor(type: string): string {
+  switch (type) {
+    case "Feature":
+      return "bg-green-100 text-green-800";
+    case "Refactor":
+      return "bg-blue-100 text-blue-800";
+    case "Logic":
+      return "bg-purple-100 text-purple-800";
+    case "Chore":
+      return "bg-gray-100 text-gray-800";
+    case "Cleanup":
+      return "bg-yellow-100 text-yellow-800";
+    case "Config":
+      return "bg-gray-100 text-gray-800";
+    default:
+      return "bg-gray-100 text-gray-800";
+  }
+}
+
+// Helper function to determine if a change type should show code snippets
+function shouldShowCodeSnippet(type: string): boolean {
+  return ["Feature", "Refactor", "Logic"].includes(type);
+}
+
+// Helper function to ensure code snippet is an array
+function normalizeCodeSnippet(
+  snippet: string | string[] | undefined
+): string[] {
+  if (!snippet) return [];
+  if (typeof snippet === "string") return [snippet];
+  return snippet;
+}
+
+// Helper function to generate a summary from code changes
+function generateSummary(
+  codeChanges: CommitAnalysis["codeChanges"],
+  commitMessage: string
+): string {
+  // Try to find a Feature or Refactor change with a summary
+  const significantChange = codeChanges.find(
+    (change) =>
+      (change.type === "Feature" || change.type === "Refactor") &&
+      change.summary
+  );
+
+  if (significantChange?.summary) {
+    // Ensure summary is not too long
+    return significantChange.summary.split(" ").slice(0, 12).join(" ");
+  }
+
+  // If no summary found, use the title of the first code change
+  if (codeChanges.length > 0 && codeChanges[0].summary) {
+    return codeChanges[0].summary.split(" ").slice(0, 12).join(" ");
+  }
+
+  // Fall back to commit message, truncated to 12 words
+  return commitMessage.split(" ").slice(0, 12).join(" ");
 }
 
 export default function CommitAnalysisPage() {
@@ -286,9 +350,14 @@ export default function CommitAnalysisPage() {
       {/* Commit Header with Regenerate Button */}
       <div className="mb-8 pb-6 border-b">
         <div className="flex justify-between items-start mb-4">
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">
-            {commit.message}
-          </h1>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">
+              {commit.summary || commit.message}
+            </h1>
+            {commit.summary && commit.summary !== commit.message && (
+              <p className="text-gray-600 text-sm">{commit.message}</p>
+            )}
+          </div>
           <button
             onClick={handleRegenerate}
             disabled={isRegenerating}
@@ -392,20 +461,74 @@ export default function CommitAnalysisPage() {
                 <div className="h-4 bg-gray-100 rounded w-3/4"></div>
               </div>
             ) : codeChanges?.length ? (
-              codeChanges.map((change, index) => (
-                <div key={index} className="mb-6 last:mb-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm">
-                      {change.type}
-                    </span>
-                    <span className="text-gray-600">{change.file}</span>
-                    <span className="text-gray-500">({change.lines})</span>
+              codeChanges
+                .sort((a, b) => {
+                  const priority = (type: string) => {
+                    switch (type) {
+                      case "Feature":
+                        return 0;
+                      case "Refactor":
+                        return 1;
+                      case "Logic":
+                        return 2;
+                      default:
+                        return 3;
+                    }
+                  };
+                  return priority(a.type) - priority(b.type);
+                })
+                .map((change, index) => (
+                  <div
+                    key={index}
+                    className="mb-8 p-4 bg-white rounded-lg shadow"
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span
+                        className={`px-2 py-1 rounded text-sm ${getTypeColor(
+                          change.type
+                        )}`}
+                      >
+                        {change.type}
+                      </span>
+                      <span className="text-gray-600">{change.file}</span>
+                      <span className="text-gray-500 text-sm">
+                        ({change.lines})
+                      </span>
+                    </div>
+                    <p className="text-gray-900 font-medium mb-3">
+                      {change.summary}
+                    </p>
+                    {shouldShowCodeSnippet(change.type) &&
+                      change.codeSnippet &&
+                      change.codeSnippet.length > 0 && (
+                        <div className="bg-gray-50 rounded-md mb-4 overflow-hidden">
+                          <CodeBlock
+                            code={normalizeCodeSnippet(change.codeSnippet).join(
+                              "\n"
+                            )}
+                            language={
+                              change.file.endsWith(".tsx")
+                                ? "tsx"
+                                : change.file.endsWith(".ts")
+                                ? "typescript"
+                                : change.file.endsWith(".js")
+                                ? "javascript"
+                                : change.file.endsWith(".jsx")
+                                ? "jsx"
+                                : change.file.endsWith(".css")
+                                ? "css"
+                                : change.file.endsWith(".html")
+                                ? "html"
+                                : "typescript"
+                            }
+                          />
+                        </div>
+                      )}
+                    <div className="prose prose-sm max-w-none prose-code:bg-gray-100 prose-code:p-1 prose-code:rounded prose-code:text-sm">
+                      <ReactMarkdown>{change.explanation}</ReactMarkdown>
+                    </div>
                   </div>
-                  <div className="prose prose-sm max-w-none">
-                    <ReactMarkdown>{change.explanation}</ReactMarkdown>
-                  </div>
-                </div>
-              ))
+                ))
             ) : (
               <p className="text-gray-500">No code changes to display</p>
             )}
@@ -431,9 +554,11 @@ export default function CommitAnalysisPage() {
                 <>
                   <div className="mb-4 overflow-x-auto" ref={diagramRef} />
                   {architectureDiagram?.explanation && (
-                    <p className="text-gray-700">
-                      {architectureDiagram.explanation}
-                    </p>
+                    <div className="prose prose-sm max-w-none prose-code:bg-gray-100 prose-code:p-1 prose-code:rounded prose-code:text-sm">
+                      <ReactMarkdown>
+                        {architectureDiagram.explanation}
+                      </ReactMarkdown>
+                    </div>
                   )}
                 </>
               )}
@@ -460,11 +585,16 @@ export default function CommitAnalysisPage() {
                 <>
                   <h3 className="font-medium mb-3">{reactConcept?.concept}</h3>
                   {reactConcept?.codeSnippet && (
-                    <pre className="bg-gray-800 text-gray-100 p-4 rounded-md mb-3 overflow-x-auto">
-                      <code>{reactConcept.codeSnippet}</code>
-                    </pre>
+                    <div className="bg-gray-50 rounded-md mb-4 overflow-hidden">
+                      <CodeBlock
+                        code={normalizeCodeSnippet(
+                          reactConcept.codeSnippet
+                        ).join("\n")}
+                        language="tsx"
+                      />
+                    </div>
                   )}
-                  <div className="prose prose-sm max-w-none">
+                  <div className="prose prose-sm max-w-none prose-code:bg-gray-100 prose-code:p-1 prose-code:rounded prose-code:text-sm">
                     <ReactMarkdown>
                       {reactConcept?.explanation || ""}
                     </ReactMarkdown>

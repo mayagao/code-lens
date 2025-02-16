@@ -64,6 +64,7 @@ model CommitAnalysis {
   id                  String     @id @default(cuid())
   repositoryId        String
   commitSha           String
+  summary            String     @default("No summary available")
   createdAt           DateTime   @default(now())
   updatedAt           DateTime   @updatedAt
   codeChanges         Json

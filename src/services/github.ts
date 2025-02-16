@@ -290,4 +290,22 @@ export class GitHubService {
       })),
     };
   }
+
+  static async getCommit(owner: string, repo: string, sha: string) {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/commits/${sha}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_GITHUB_TOKEN}`,
+          Accept: "application/vnd.github.v3+json",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch commit: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
 }

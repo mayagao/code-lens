@@ -10,6 +10,11 @@ interface AnalysisResult {
   };
 }
 
+interface MessageContent {
+  type: "text";
+  text: string;
+}
+
 export const claude = new Anthropic({
   apiKey: process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY || "",
 });
@@ -18,26 +23,46 @@ export const claude = new Anthropic({
 export async function createCompletion(prompt: string) {
   console.log("Sending prompt to Claude (length):", prompt.length);
 
-  const response = await claude.messages.create({
-    model: "claude-3-opus-20240229",
-    max_tokens: 2000, // Ensure we get at least 1k tokens in response
-    temperature: 0.7,
-    messages: [
-      {
-        role: "user",
-        content: prompt.slice(0, 4000), // Limit prompt to 2k characters
+  try {
+    const response = await claude.messages.create({
+      model: "claude-3-opus-20240229",
+      max_tokens: 2000,
+      temperature: 0.7,
+      messages: [
+        {
+          role: "user",
+          content: prompt.slice(0, 4000),
+        },
+      ],
+    });
+
+    // Log detailed response information
+    console.log("Claude Response Details:", {
+      inputTokens: response.usage?.input_tokens,
+      outputTokens: response.usage?.output_tokens,
+      contentLength:
+        response.content[0]?.type === "text"
+          ? response.content[0].text.length
+          : 0,
+    });
+
+    return response;
+  } catch (error) {
+    console.error("Error in createCompletion:", error);
+    // Return an empty response object instead of null
+    return {
+      content: [
+        {
+          type: "text",
+          text: "",
+        },
+      ],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
       },
-    ],
-  });
-
-  // Log detailed response information
-  console.log("Claude Response Details:", {
-    inputTokens: response.usage?.input_tokens,
-    outputTokens: response.usage?.output_tokens,
-    contentLength: response.content[0].text?.length,
-  });
-
-  return response;
+    };
+  }
 }
 
 export class ClaudeService {
