@@ -26,6 +26,7 @@ interface CommitAnalysis {
     type: string;
     file: string;
     lines: string;
+    codeSnippet?: string[];
     explanation: string;
   }[];
   architectureDiagram: {
@@ -34,7 +35,9 @@ interface CommitAnalysis {
   };
   reactConcept: {
     concept: string;
-    codeSnippet: string;
+    file: string;
+    lines: string;
+    codeSnippet: string[];
     explanation: string;
   };
 }
@@ -401,6 +404,11 @@ export default function CommitAnalysisPage() {
                     <span className="text-gray-600">{change.file}</span>
                     <span className="text-gray-500">({change.lines})</span>
                   </div>
+                  {change.codeSnippet && (
+                    <pre className="bg-gray-800 text-gray-100 p-4 rounded-md mb-3 overflow-x-auto">
+                      <code>{change.codeSnippet.join("\n")}</code>
+                    </pre>
+                  )}
                   <div className="prose prose-sm max-w-none">
                     <ReactMarkdown>{change.explanation}</ReactMarkdown>
                   </div>
@@ -459,9 +467,13 @@ export default function CommitAnalysisPage() {
               ) : (
                 <>
                   <h3 className="font-medium mb-3">{reactConcept?.concept}</h3>
+                  <div className="flex items-center gap-2 mb-2 text-sm text-gray-600">
+                    <span>{reactConcept?.file}</span>
+                    <span>({reactConcept?.lines})</span>
+                  </div>
                   {reactConcept?.codeSnippet && (
                     <pre className="bg-gray-800 text-gray-100 p-4 rounded-md mb-3 overflow-x-auto">
-                      <code>{reactConcept.codeSnippet}</code>
+                      <code>{reactConcept.codeSnippet.join("\n")}</code>
                     </pre>
                   )}
                   <div className="prose prose-sm max-w-none">

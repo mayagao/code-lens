@@ -28,9 +28,17 @@ const TOKEN_LIMIT = 2000; // Set a reasonable limit for tokens
 
 // Define Zod schemas for our analysis structure
 const CodeChangeSchema = z.object({
-  type: z.enum(["New Feature", "Refactor", "Chore", "Cleanup", "Config"]),
+  type: z.enum([
+    "New Feature",
+    "Refactor",
+    "Improvement",
+    "Chore",
+    "Cleanup",
+    "Config",
+  ]),
   file: z.string(),
   lines: z.string(),
+  codeSnippet: z.array(z.string()).optional(),
   explanation: z.string(),
 });
 
@@ -41,7 +49,9 @@ const ArchitectureDiagramSchema = z.object({
 
 const ReactConceptSchema = z.object({
   concept: z.string(),
-  codeSnippet: z.string(),
+  file: z.string(),
+  lines: z.string(),
+  codeSnippet: z.array(z.string()),
   explanation: z.string(),
 });
 
@@ -67,7 +77,9 @@ const DEFAULT_ANALYSIS = {
   },
   reactConcept: {
     concept: "None",
-    codeSnippet: "// No code snippet available",
+    file: "unknown",
+    lines: "N/A",
+    codeSnippet: ["1: // No code snippet available"],
     explanation: "No React concept analysis available",
   },
 };
@@ -77,9 +89,10 @@ const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACT
 {
   "codeChanges": [
     {
-      "type": "New Feature|Refactor|Chore|Cleanup|Config",
+      "type": "New Feature|Refactor|Improvement|Chore|Cleanup|Config",
       "file": "path/to/file",
-      "lines": "Include file names, line numbers, and up to 10 lines of code snippets.",
+      "lines": "line numbers in format like 68-88",
+      "codeSnippet": ["array of code lines with line numbers", "only for New Feature, Refactor, and Improvement types"],
       "explanation": "Explain each change in simple, non-technical terms."
     }
   ],
@@ -89,10 +102,20 @@ const ANALYSIS_STRUCTURE_TEMPLATE = `Provide a comprehensive analysis with EXACT
   },
   "reactConcept": {
     "concept": "Select one core React concept to explain.",
-    "codeSnippet": "Use a short code snippet (max 5-7 lines).",
+    "file": "path to the file containing the concept",
+    "lines": "line numbers in format like 68-75",
+    "codeSnippet": ["array of code lines with line numbers"],
     "explanation": "Keep the explanation beginner-friendly."
   }
-}`;
+}
+
+IMPORTANT NOTES:
+1. Sort code changes by type: New Feature, Refactor, and Improvement first, followed by Chore, Cleanup, and Config
+2. Include code snippets ONLY for New Feature, Refactor, and Improvement changes
+3. For Chore, Cleanup, and Config changes, omit the codeSnippet field
+4. Each code snippet line MUST include the actual line number as prefix (e.g. "68: const foo = bar;")
+5. Ensure line numbers in the 'lines' field exactly match the actual code snippet line numbers
+6. For React concept, always include the file path and correct line numbers`;
 
 const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
 
@@ -101,7 +124,7 @@ const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
     {
       "type": "New Feature",
       "file": "src/components/Editor/Block.tsx",
-      "lines": "68–88",
+      "lines": "68-75",
       "codeSnippet": [
         "68: const renderContent = () => {",
         "69:   if (block.state === \\"completed\\") {",
@@ -110,10 +133,15 @@ const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
         "72:   if (block.state === \\"searching\\") {",
         "73:     return \`\${block.searchQuery || \\"select item\\"}\`;",
         "74:   }",
-        "75: };",
-        "76: return <span>{renderContent()}</span>;"
+        "75: };"
       ],
-      "explanation": "We added a new rule to show names when people type @. The computer checks if the name is finished or still being searched."
+      "explanation": "Added a new feature to show names when people type @. The computer checks if the name is finished or still being searched."
+    },
+    {
+      "type": "Chore",
+      "file": "package.json",
+      "lines": "15-17",
+      "explanation": "Updated development dependencies to latest versions for better security."
     }
   ],
   "architectureDiagram": {
@@ -122,7 +150,15 @@ const ANALYSIS_EXAMPLE_TEMPLATE = `EXAMPLE:
   },
   "reactConcept": {
     "concept": "React's useState",
-    "codeSnippet": "const [state, setState] = useState({ blocks: [createTextBlock()], cursor: { blockIndex: 0, offset: 0 } });",
+    "file": "src/components/Editor/Block.tsx",
+    "lines": "12-16",
+    "codeSnippet": [
+      "12: const [state, setState] = useState({",
+      "13:   blocks: [createTextBlock()],",
+      "14:   cursor: { blockIndex: 0, offset: 0 }",
+      "15: });",
+      "16: "
+    ],
     "explanation": "React has a magic memory called useState. It helps the app remember what you're typing, like a sticky note that React checks when drawing the screen. When you type something new, setState updates the note so React can show the change."
   }
 }`;
@@ -702,11 +738,22 @@ ${finalDiff}`;
         const validatedAnalysis = AnalysisSchema.parse(parsedResponse);
         log.success("Analysis validated successfully");
 
+        // Additional validation for line numbers
+        const cleanedAnalysis = {
+          ...validatedAnalysis,
+          codeChanges: sortCodeChanges(
+            validateAndCleanCodeChanges(validatedAnalysis.codeChanges)
+          ),
+          reactConcept: validateAndCleanReactConcept(
+            validatedAnalysis.reactConcept
+          ),
+        };
+
         log.info("Caching analysis...");
-        await cacheAnalysis(diffHash, filteredDiff, validatedAnalysis);
+        await cacheAnalysis(diffHash, filteredDiff, cleanedAnalysis);
         log.success("Analysis cached");
 
-        return validatedAnalysis;
+        return cleanedAnalysis;
       } catch (zodError) {
         if (zodError instanceof z.ZodError) {
           log.error("Validation Errors:");
@@ -716,12 +763,9 @@ ${finalDiff}`;
           // Try to fix the response
           const fixedResponse = {
             codeChanges: Array.isArray(parsedResponse.codeChanges)
-              ? parsedResponse.codeChanges.map((change: any) => ({
-                  type: validateChangeType(change.type) ? change.type : "Chore",
-                  file: change.file || "unknown",
-                  lines: change.lines || "N/A",
-                  explanation: change.explanation || "No explanation provided",
-                }))
+              ? sortCodeChanges(
+                  validateAndCleanCodeChanges(parsedResponse.codeChanges)
+                )
               : DEFAULT_ANALYSIS.codeChanges,
             architectureDiagram: {
               diagram: parsedResponse.architectureDiagram?.diagram?.startsWith(
@@ -737,6 +781,12 @@ ${finalDiff}`;
               concept:
                 parsedResponse.reactConcept?.concept ||
                 DEFAULT_ANALYSIS.reactConcept.concept,
+              file:
+                parsedResponse.reactConcept?.file ||
+                DEFAULT_ANALYSIS.reactConcept.file,
+              lines:
+                parsedResponse.reactConcept?.lines ||
+                DEFAULT_ANALYSIS.reactConcept.lines,
               codeSnippet:
                 parsedResponse.reactConcept?.codeSnippet ||
                 DEFAULT_ANALYSIS.reactConcept.codeSnippet,
@@ -771,6 +821,127 @@ ${finalDiff}`;
 
 // Helper function to validate change type
 function validateChangeType(type: string): boolean {
-  const validTypes = ["New Feature", "Refactor", "Chore", "Cleanup", "Config"];
+  const validTypes = [
+    "New Feature",
+    "Refactor",
+    "Improvement",
+    "Chore",
+    "Cleanup",
+    "Config",
+  ];
   return validTypes.includes(type);
+}
+
+// Add helper to sort code changes by type
+function sortCodeChanges(changes: any[]) {
+  const typeOrder = {
+    "New Feature": 0,
+    Refactor: 1,
+    Improvement: 2,
+    Chore: 3,
+    Cleanup: 4,
+    Config: 5,
+  };
+
+  return changes.sort((a, b) => {
+    const aOrder = typeOrder[a.type as keyof typeof typeOrder] ?? 999;
+    const bOrder = typeOrder[b.type as keyof typeof typeOrder] ?? 999;
+    return aOrder - bOrder;
+  });
+}
+
+// Add helper to validate and clean code changes
+function validateAndCleanCodeChanges(changes: any[]) {
+  return changes.map((change: any) => {
+    const type = validateChangeType(change.type) ? change.type : "Chore";
+    const shouldHaveSnippet = [
+      "New Feature",
+      "Refactor",
+      "Improvement",
+    ].includes(type);
+
+    const cleanedChange = {
+      type,
+      file: change.file || "unknown",
+      lines: change.lines || "N/A",
+      explanation: change.explanation || "No explanation provided",
+    };
+
+    if (shouldHaveSnippet && Array.isArray(change.codeSnippet)) {
+      // Validate line numbers in code snippet
+      if (validateLineNumbers(change.codeSnippet, change.lines)) {
+        return {
+          ...cleanedChange,
+          codeSnippet: change.codeSnippet,
+        };
+      } else {
+        // If line numbers are invalid, try to fix them
+        const [startStr] = (change.lines || "").split("-");
+        const start = parseInt(startStr) || 1;
+        return {
+          ...cleanedChange,
+          lines: `${start}-${start + change.codeSnippet.length - 1}`,
+          codeSnippet: change.codeSnippet.map((line: string, index: number) => {
+            const lineContent = line.includes(": ")
+              ? line.split(": ")[1]
+              : line;
+            return `${start + index}: ${lineContent}`;
+          }),
+        };
+      }
+    }
+
+    return cleanedChange;
+  });
+}
+
+// Add helper to validate line numbers in code snippets
+function validateLineNumbers(
+  codeSnippet: string[],
+  lineRange: string
+): boolean {
+  if (!lineRange || !codeSnippet || codeSnippet.length === 0) return false;
+
+  const [startStr, endStr] = lineRange.split("-");
+  const start = parseInt(startStr);
+  const end = parseInt(endStr);
+
+  if (isNaN(start) || isNaN(end)) return false;
+
+  // Check if each line in the snippet has the correct line number prefix
+  return codeSnippet.every((line, index) => {
+    const expectedLineNum = start + index;
+    return line.startsWith(`${expectedLineNum}: `) && expectedLineNum <= end;
+  });
+}
+
+// Add helper to validate and clean React concept
+function validateAndCleanReactConcept(concept: any) {
+  const cleanedConcept = {
+    concept: concept?.concept || DEFAULT_ANALYSIS.reactConcept.concept,
+    file: concept?.file || DEFAULT_ANALYSIS.reactConcept.file,
+    lines: concept?.lines || DEFAULT_ANALYSIS.reactConcept.lines,
+    codeSnippet: Array.isArray(concept?.codeSnippet)
+      ? concept.codeSnippet
+      : DEFAULT_ANALYSIS.reactConcept.codeSnippet,
+    explanation:
+      concept?.explanation || DEFAULT_ANALYSIS.reactConcept.explanation,
+  };
+
+  // Validate and fix line numbers in code snippet if needed
+  if (!validateLineNumbers(cleanedConcept.codeSnippet, cleanedConcept.lines)) {
+    const start = parseInt(cleanedConcept.lines.split("-")[0]) || 1;
+    return {
+      ...cleanedConcept,
+      lines: `${start}-${start + cleanedConcept.codeSnippet.length - 1}`,
+      codeSnippet: cleanedConcept.codeSnippet.map(
+        (line: string, index: number) => {
+          const lineContent = line.includes(": ") ? line.split(": ")[1] : line;
+          return `${start + index}: ${lineContent}`;
+        }
+      ),
+    };
+  }
+
+  return cleanedConcept;
 }
