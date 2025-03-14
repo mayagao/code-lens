@@ -1,8 +1,14 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { Anthropic } from "@anthropic-ai/sdk";
 
-interface AnalysisResult {
+export interface AnalysisResult {
   overview: string;
   mermaidDiagram: string;
+  concepts: Array<{
+    name: string;
+    description: string;
+    category: string;
+    confidence: number;
+  }>;
   cost?: {
     inputTokens: number;
     outputTokens: number;
@@ -20,21 +26,29 @@ export async function createCompletion(prompt: string) {
 
   const response = await claude.messages.create({
     model: "claude-3-opus-20240229",
-    max_tokens: 2000, // Ensure we get at least 1k tokens in response
+    max_tokens: 2000,
     temperature: 0.7,
     messages: [
       {
         role: "user",
-        content: prompt.slice(0, 4000), // Limit prompt to 2k characters
+        content: prompt.slice(0, 4000),
       },
     ],
   });
 
   // Log detailed response information
+  const content = response.content[0];
+  const text =
+    typeof content === "string"
+      ? content
+      : "type" in content && content.type === "text"
+      ? (content as { type: "text"; text: string }).text
+      : JSON.stringify(content);
+
   console.log("Claude Response Details:", {
     inputTokens: response.usage?.input_tokens,
     outputTokens: response.usage?.output_tokens,
-    contentLength: response.content[0].text?.length,
+    contentLength: text.length,
   });
 
   return response;
@@ -83,7 +97,15 @@ Your response must be parseable by JSON.parse() without any preprocessing.
 Analyze this repository and generate a JSON response with exactly this structure:
 {
   "overview": "A clear explanation of how the repository works...",
-  "mermaidDiagram": "graph TD\\n..."
+  "mermaidDiagram": "graph TD\\n...",
+  "concepts": [
+    {
+      "name": "string",
+      "description": "string",
+      "category": "language|framework|pattern|architecture",
+      "confidence": number // 0-1 score
+    }
+  ]
 }
 
 Repository Information:
@@ -105,6 +127,13 @@ Requirements for the mermaidDiagram field:
 4. Keep it high-level and focused on architecture
 5. Use appropriate node shapes for different types (e.g., [Service], (Component), {Data})
 
+Requirements for the concepts field:
+1. Identify key architectural patterns and practices
+2. Include framework and library choices with rationale
+3. Note any interesting engineering practices
+4. Consider scalability and maintainability aspects
+5. Assign confidence scores based on evidence in the code
+
 CRITICAL: Your entire response must be a single valid JSON object that can be parsed with JSON.parse().
 Do not include any text before or after the JSON.
 Ensure all quotes and special characters in strings are properly escaped.`;
@@ -123,15 +152,19 @@ Ensure all quotes and special characters in strings are properly escaped.`;
       });
 
       const content = response.content[0];
-      if (!("text" in content)) {
+      let jsonText = "";
+
+      if (typeof content === "string") {
+        jsonText = content;
+      } else if ("type" in content && content.type === "text") {
+        // For Claude API v3, the response is in the text field
+        jsonText = (content as { type: "text"; text: string }).text;
+      } else {
         throw new Error("Unexpected response format from Claude");
       }
 
-      // Log the raw response for debugging
-      console.log("Claude raw response:", content.text);
-
       try {
-        const result = JSON.parse(content.text);
+        const result = JSON.parse(jsonText);
 
         // Validate the response structure
         if (!result.overview || typeof result.overview !== "string") {
@@ -142,6 +175,9 @@ Ensure all quotes and special characters in strings are properly escaped.`;
           typeof result.mermaidDiagram !== "string"
         ) {
           throw new Error("Missing or invalid 'mermaidDiagram' in response");
+        }
+        if (!Array.isArray(result.concepts)) {
+          throw new Error("Missing or invalid 'concepts' in response");
         }
 
         // Add cost information
@@ -159,7 +195,7 @@ Ensure all quotes and special characters in strings are properly escaped.`;
         };
       } catch (parseError) {
         console.error("Failed to parse Claude's response:", parseError);
-        console.error("Response content:", content.text);
+        console.error("Response content:", jsonText);
         throw new Error(
           `Failed to parse Claude's response: ${
             parseError instanceof Error

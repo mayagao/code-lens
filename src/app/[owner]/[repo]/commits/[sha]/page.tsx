@@ -567,6 +567,7 @@ export default function CommitAnalysisPage() {
                     <span>({reactConcept?.lines})</span>
                   </div>
                   {reactConcept?.codeSnippet &&
+                    Array.isArray(reactConcept.codeSnippet) &&
                     reactConcept.codeSnippet.length > 0 && (
                       <div className="mb-3">
                         <SyntaxHighlighter
@@ -590,7 +591,11 @@ export default function CommitAnalysisPage() {
                           }}
                         >
                           {reactConcept.codeSnippet
-                            .map((line) => line.split(": ").slice(1).join(": "))
+                            .map((line) =>
+                              typeof line === "string"
+                                ? line.split(": ").slice(1).join(": ")
+                                : ""
+                            )
                             .join("\n")}
                         </SyntaxHighlighter>
                       </div>

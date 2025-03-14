@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import prisma from "@/lib/prisma";
+import { GitHubService } from "@/services/github";
 
 interface RouteParams {
   params: {
@@ -20,7 +21,8 @@ export async function GET(request: Request, context: RouteParams) {
 
     const { owner, repo } = params;
 
-    const analysis = await prisma.repositoryAnalysis.findFirst({
+    // Get existing analysis
+    const existingAnalysis = await prisma.repositoryAnalysis.findFirst({
       where: {
         repository: {
           owner,
@@ -32,7 +34,19 @@ export async function GET(request: Request, context: RouteParams) {
       },
     });
 
-    return NextResponse.json(analysis);
+    if (!existingAnalysis) {
+      return NextResponse.json(null);
+    }
+
+    // Get latest commit to check if there are updates
+    const githubService = GitHubService.getInstance();
+    const latestCommit = await githubService.getLatestCommit(owner, repo);
+
+    return NextResponse.json({
+      ...existingAnalysis,
+      hasNewCommits: latestCommit.sha !== existingAnalysis.lastAnalyzedCommit,
+      latestCommitSha: latestCommit.sha,
+    });
   } catch (error) {
     console.error("Failed to fetch repository analysis:", error);
     return NextResponse.json(
