@@ -31,3 +31,6 @@ CodeLens is a Next.js 15 application (TypeScript, App Router) that provides AI-p
 - **No test framework is configured** — there are no Jest/Vitest/Playwright configs or test scripts.
 - **Environment variables**: The app requires `GITHUB_ID`, `GITHUB_SECRET`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`, `NEXT_PUBLIC_GITHUB_TOKEN`, and `NEXT_PUBLIC_ANTHROPIC_API_KEY` in `.env.local`. Without real GitHub/Anthropic credentials, the homepage shows a "Bad credentials" error, but the server and DB routes still function.
 - **The `hello-prisma/` directory** is an unrelated sub-project (Prisma tutorial) — not part of the main CodeLens product.
+- **Port conflicts**: If Chrome or another process holds port 3000, `npm run dev` auto-selects port 3001. Check which port the server reports in its output.
+- **Pre-existing import bug**: `src/app/api/repos/[owner]/[repo]/analysis/route.ts` uses `import { prisma }` (named import) but `src/lib/prisma.ts` only has a default export. The `/api/debug/db` route works correctly (uses `import prisma from ...`). Other routes under `/api/repos/` may have similar issues.
+- **Working API for verification**: `/api/debug/db` is a reliable endpoint for verifying the DB + server connection (returns `commitAnalysis` records with joined `repository` data).
